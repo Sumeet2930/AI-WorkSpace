@@ -5,8 +5,8 @@ import axios from '../config/axios'
 import { initializeSocket, sendMessage } from '../config/socket'
 import Markdown from 'markdown-to-jsx'
 import hljs from 'highlight.js';
-import { getWebContainer } from '../config/webcontainer'
-
+import { getWebContainer } from '../config/webContainer'
+import ThemeToggle from '../components/ThemeToggle'
 
 function SyntaxHighlightedCode(props) {
     const ref = useRef(null)
@@ -14,8 +14,6 @@ function SyntaxHighlightedCode(props) {
     React.useEffect(() => {
         if (ref.current && props.className?.includes('lang-') && window.hljs) {
             window.hljs.highlightElement(ref.current)
-
-            // hljs won't reprocess the element unless this attribute is removed
             ref.current.removeAttribute('data-highlighted')
         }
     }, [ props.className, props.children ])
@@ -23,509 +21,536 @@ function SyntaxHighlightedCode(props) {
     return <code {...props} ref={ref} />
 }
 
-
 const Project = () => {
-
     const location = useLocation()
     const navigate = useNavigate()
 
     const [ isSidePanelOpen, setIsSidePanelOpen ] = useState(false)
     const [ isModalOpen, setIsModalOpen ] = useState(false)
-    const [ selectedUserId, setSelectedUserId ] = useState(new Set()) // Initialized as Set
+    const [ selectedUserId, setSelectedUserId ] = useState(new Set())
     const [ project, setProject ] = useState(location.state?.project || {})
     const [ message, setMessage ] = useState('')
     const { user } = useContext(UserContext)
     const [ error, setError ] = useState('')
     const messageBox = React.createRef()
+    
+    // UI State for tabs/panels
+    const [ activeTab, setActiveTab ] = useState('editor') // 'editor' | 'preview'
 
-    // Redirect or handle safely if project data is missing (e.g., direct access)
     useEffect(() => {
         const projectId = location.state?.project?._id || new URLSearchParams(location.search).get('projectId')
-
         if (!projectId) {
-            console.warn("No project state or projectId found in URL. Redirecting to home.")
             navigate('/')
-            return
         }
-
-        // if project was provided via navigation state, keep it, otherwise we'll fetch it below
-        if (!location.state || !location.state.project) {
-            console.log('No project in location.state — will fetch by id:', projectId)
-        }
-
     }, [location.state, location.search, navigate])
 
     const [ users, setUsers ] = useState([])
-    const [ messages, setMessages ] = useState([]) // New state variable for messages
+    const [ messages, setMessages ] = useState([]) 
     const [ fileTree, setFileTree ] = useState({})
-
     const [ currentFile, setCurrentFile ] = useState(null)
     const [ openFiles, setOpenFiles ] = useState([])
-
     const [ webContainer, setWebContainer ] = useState(null)
+    const webContainerRef = useRef(null)
     const [ iframeUrl, setIframeUrl ] = useState(null)
-
     const [ runProcess, setRunProcess ] = useState(null)
+    const [ isRunning, setIsRunning ] = useState(false)
+    const [ buildLogs, setBuildLogs ] = useState('')
+    const [ latestAiResponse, setLatestAiResponse ] = useState(null)
+
+
 
     const handleUserClick = (id) => {
-        setSelectedUserId(prevSelectedUserId => {
-            const newSelectedUserId = new Set(prevSelectedUserId);
-            if (newSelectedUserId.has(id)) {
-                newSelectedUserId.delete(id);
-            } else {
-                newSelectedUserId.add(id);
-            }
-
-            return newSelectedUserId;
+        setSelectedUserId(prev => {
+            const newSet = new Set(prev);
+            newSet.has(id) ? newSet.delete(id) : newSet.add(id);
+            return newSet;
         });
-
-
     }
 
-
     function addCollaborators() {
-
         axios.put("/projects/add-user", {
             projectId: location.state.project._id,
             users: Array.from(selectedUserId)
         }).then(res => {
-            console.log(res.data)
             setIsModalOpen(false)
-            // Update the project state with the new project data (which includes the updated users list)
             setProject(res.data.project)
              setSelectedUserId(new Set())
         }).catch(err => {
             console.log(err)
              if (err.response && err.response.data) {
-                if (err.response.data.errors) {
-                     if (Array.isArray(err.response.data.errors)) {
-                        setError(err.response.data.errors[0].msg)
-                     } else {
-                        setError(err.response.data.errors)
-                     }
-                } else {
-                    setError('Failed to add collaborators')
-                }
+                setError(err.response.data.errors ? (Array.isArray(err.response.data.errors) ? err.response.data.errors[0].msg : err.response.data.errors) : 'Failed to add collaborators')
             } else {
-                 setError('Network Error: Could not connect to server. Check console.')
+                 setError('Network Error')
             }
         })
-
     }
 
     const send = () => {
-        const currentMessage = message
-
-        if (!currentMessage || !currentMessage.trim()) return
-
-        try {
-            const ok = sendMessage('project-message', {
-                message: currentMessage,
-                sender: user
-            })
-
-            if (ok) {
-                // only clear input after successful emit
-                setMessage("")
-            } else {
-                setError('Socket not connected — message not sent')
-            }
-        } catch (err) {
-            console.error('Failed to send message', err)
-            setError('Failed to send message')
-        }
+         if (!message || !message.trim()) return
+         const ok = sendMessage('project-message', {
+             message,
+             sender: user
+         })
+         if (ok) setMessage("")
     }
 
     function WriteAiMessage(message) {
         let messageObject = message
-
         if (typeof message === 'string') {
             try {
-                messageObject = JSON.parse(message)
+                // Remove potential markdown code blocks if Gemini wraps JSON
+                const cleaned = message.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim()
+                messageObject = JSON.parse(cleaned)
             } catch (e) {
-                // not JSON — treat as plain text
                 messageObject = { text: message }
             }
         }
-
-        const text = messageObject?.text ?? String(messageObject)
-
+        
+        // If it's still an object, extract the text part
+        const text = messageObject?.text || (typeof messageObject === 'string' ? messageObject : JSON.stringify(messageObject))
+        
         return (
-            <div
-                className='overflow-auto bg-slate-950 text-white rounded-sm p-2'
-            >
-                <Markdown
-                    children={text}
-                    options={{
-                        overrides: {
-                            code: SyntaxHighlightedCode,
-                        },
-                    }}
-                />
+            <div className='overflow-auto bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-700 rounded-lg p-3 shadow-sm'>
+                <div className="prose dark:prose-invert max-w-none text-sm">
+                    <Markdown children={text} options={{ overrides: { code: SyntaxHighlightedCode } }} />
+                </div>
             </div>)
     }
 
     useEffect(() => {
+        const projectIdFromState = location.state?.project?._id
+        const projectIdFromQuery = new URLSearchParams(location.search).get('projectId')
+        const projectId = projectIdFromState || projectIdFromQuery
+        
+        if (!projectId) return
 
-        const projectId = location.state?.project?._id || new URLSearchParams(location.search).get('projectId')
-        const socket = initializeSocket(projectId) // Capture socket instance
-        console.log("Socket Initialized for Project ID:", projectId)
-
-        if (!webContainer) {
+        const socket = initializeSocket(projectId)
+        
+        if (!webContainerRef.current) {
             getWebContainer().then(container => {
+                webContainerRef.current = container
                 setWebContainer(container)
-                console.log("container started")
             })
         }
 
-
         const handler = (data) => {
-            console.log("RECEIVED MESSAGE:", data)
-
             if (data.sender && data.sender._id == 'ai') {
-                // Try to parse AI messages as JSON; fall back to plain text
                 let parsedMessage = null
                 try {
-                    parsedMessage = typeof data.message === 'string' ? JSON.parse(data.message) : data.message
+                    const msgStr = typeof data.message === 'string' ? data.message : JSON.stringify(data.message)
+                    const cleaned = msgStr.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim()
+                    parsedMessage = JSON.parse(cleaned)
                 } catch (err) {
-                    console.warn('AI message is not valid JSON, treating as plain text:', data.message)
-                    parsedMessage = { text: String(data.message) }
+                    parsedMessage = { text: typeof data.message === 'object' ? JSON.stringify(data.message) : String(data.message) }
                 }
-
-                console.log(parsedMessage)
-
-                webContainer?.mount(parsedMessage.fileTree)
-
+                
                 if (parsedMessage.fileTree) {
-                    setFileTree(parsedMessage.fileTree || {})
+                    setFileTree(parsedMessage.fileTree)
+                    webContainerRef.current?.mount(parsedMessage.fileTree).catch(e => console.error('Mount failed:', e))
                 }
-
-                // Normalize stored message so UI can expect an object for AI messages
-                setMessages(prevMessages => [ ...prevMessages, { ...data, message: parsedMessage } ])
+                
+                if (parsedMessage.buildCommand || parsedMessage.startCommand) {
+                    setLatestAiResponse(parsedMessage)
+                }
+                
+                setMessages(prev => [ ...prev, { ...data, message: parsedMessage } ])
             } else {
-                setMessages(prevMessages => [ ...prevMessages, data ]) // Update messages state
+                setMessages(prev => [ ...prev, data ])
             }
         }
 
         socket.on('project-message', handler)
 
-
-
-
-        if (projectId) {
-            axios.get(`/projects/get-project/${projectId}`).then(res => {
-                console.log(res.data.project)
+        // Fetch project if needed or if refresh
+        axios.get(`/projects/get-project/${projectId}`).then(res => {
+            if (res.data.project) {
                 setProject(res.data.project)
                 setFileTree(res.data.project.fileTree || {})
-
-                // Normalize messages so `sender` is always an object with `_id` and `email`
+                
                 const msgs = (res.data.project.messages || []).map(m => {
                     const sender = m.sender || null
                     let normSender = null
                     if (sender) {
-                        if (typeof sender === 'string') {
-                            normSender = { _id: sender, email: sender }
-                        } else if (typeof sender === 'object') {
-                            normSender = { _id: sender._id || sender, email: sender.email || String(sender._id || '') }
-                        }
+                        if (typeof sender === 'string') normSender = { _id: sender, email: sender }
+                        else if (typeof sender === 'object') normSender = { _id: sender._id || sender, email: sender.email || String(sender._id || '') }
                     }
-
-                    return { ...m, sender: normSender }
+                    
+                    let normMessage = m.message
+                    if (normSender && normSender._id === 'ai') {
+                        try {
+                            const cleaned = String(m.message).replace(/^```json\n?/, '').replace(/\n?```$/, '').trim()
+                            normMessage = JSON.parse(cleaned)
+                        } catch (e) { }
+                    }
+                    return { ...m, sender: normSender, message: normMessage }
                 })
-
                 setMessages(msgs)
-            }).catch(err => {
-                console.error('Failed to fetch project:', err)
-            })
-        }
-
-        axios.get('/users/all').then(res => {
-
-            setUsers(res.data.users)
-
+            }
         }).catch(err => {
-
-            console.log(err)
-
+            console.error('Failed to load project:', err)
+            setError('Failed to load project details.')
         })
 
-        // cleanup to avoid duplicate handlers (React strict mode mounts twice in dev)
-        return () => {
-            try {
-                socket.off('project-message', handler)
-            } catch (err) {
-                console.warn('Failed to remove socket listener', err)
-            }
-        }
-
-    }, [])
+        axios.get('/users/all').then(res => setUsers(res.data.users))
+        return () => { socket.off('project-message', handler) }
+    }, [location.state, location.search])
 
     function saveFileTree(ft) {
-        axios.put('/projects/update-file-tree', {
-            projectId: project._id,
-            fileTree: ft
-        }).then(res => {
-            console.log(res.data)
-        }).catch(err => {
-            console.log(err)
-        })
+        if (!project?._id) return
+        axios.put('/projects/update-file-tree', { projectId: project._id, fileTree: ft })
     }
 
-
-    // Removed appendIncomingMessage and appendOutgoingMessage functions
-
-    function scrollToBottom() {
-        messageBox.current.scrollTop = messageBox.current.scrollHeight
-    }
+    useEffect(() => {
+        if(messageBox.current) {
+            messageBox.current.scrollTop = messageBox.current.scrollHeight
+        }
+    }, [messages])
 
     return (
-        <main className='h-screen w-screen flex'>
-            <section className="left relative flex flex-col h-screen min-w-96 bg-slate-300">
-                <header className='flex justify-between items-center p-2 px-4 w-full bg-slate-100 absolute z-10 top-0'>
-                    <button className='flex gap-2' onClick={() => setIsModalOpen(true)}>
-                        <i className="ri-add-fill mr-1"></i>
-                        <p>Add collaborator</p>
-                    </button>
-                    <button onClick={() => setIsSidePanelOpen(!isSidePanelOpen)} className='p-2'>
-                        <i className="ri-group-fill"></i>
+        <main className='h-screen w-screen flex bg-gray-50 dark:bg-slate-900 overflow-hidden transition-colors duration-300'>
+            {/* Left Sidebar - Chat & Tools */}
+            <section className="left relative flex flex-col h-full w-[350px] min-w-[300px] bg-white dark:bg-slate-800 border-r border-gray-200 dark:border-slate-700 shadow-xl z-10 transition-colors">
+                
+                {/* Header */}
+                <header className='flex justify-between items-center p-4 bg-white/80 dark:bg-slate-800/80 backdrop-blur-md border-b border-gray-100 dark:border-slate-700'>
+                    <div className="flex items-center gap-2">
+                        <h1 className='font-bold text-gray-800 dark:text-white truncate max-w-[100px]' title={project?.name || 'Loading...'}>{project?.name || 'Project'}</h1>
+                        <button className='flex items-center gap-1 px-3 py-1.5 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors' onClick={() => setIsModalOpen(true)}>
+                            <i className="ri-user-add-line"></i>
+                            <span className="text-[10px] font-semibold uppercase">Add</span>
+                        </button>
+                        <ThemeToggle />
+                    </div>
+                    
+                    <button onClick={() => setIsSidePanelOpen(!isSidePanelOpen)} className='p-2 text-gray-500 hover:text-blue-600 dark:text-gray-400 dark:hover:text-blue-400 transition-colors'>
+                        <i className={`ri-side-bar-fill text-xl ${isSidePanelOpen ? 'text-blue-600 dark:text-blue-400' : ''}`}></i>
                     </button>
                 </header>
-                <div className="conversation-area pt-14 pb-10 flex-grow flex flex-col h-full relative">
 
-                    <div
-                        ref={messageBox}
-                        className="message-box p-1 flex-grow flex flex-col gap-1 overflow-auto max-h-full scrollbar-hide">
+                {/* Chat Area */}
+                <div className="conversation-area flex-grow flex flex-col h-full overflow-hidden relative">
+                    <div ref={messageBox} className="message-box p-4 flex-grow flex flex-col gap-4 overflow-y-auto custom-scrollbar">
                         {messages.map((msg, index) => {
                             const sender = msg.sender || { _id: 'ai', email: 'AI' };
                             const isAi = sender._id === 'ai';
                             const currentUserId = user?._id ? String(user._id) : null
-
                             const senderIdStr = sender && sender._id ? (sender._id.toString ? sender._id.toString() : String(sender._id)) : null
                             const isCurrentUser = currentUserId && senderIdStr && currentUserId === senderIdStr
 
                             return (
-                                <div key={index} className={`${isAi ? 'max-w-80' : 'max-w-52'} ${isCurrentUser ? 'ml-auto' : ''}  message flex flex-col p-2 bg-slate-50 w-fit rounded-md`}>
-                                    <small className='opacity-65 text-xs'>{sender.email}</small>
-                                    <div className='text-sm'>
-                                        {isAi ? WriteAiMessage(msg.message) : <p>{msg.message}</p>}
+                                <div key={index} className={`flex flex-col ${isCurrentUser ? 'items-end' : 'items-start'} animate-fadeIn`}>
+                                    <div className="flex items-center gap-2 mb-1">
+                                        <small className='text-xs text-gray-400 dark:text-gray-500 font-medium'>{isAi ? '✨ AI Assistant' : (isCurrentUser ? 'You' : sender.email)}</small>
+                                    </div>
+                                    <div className={`${isAi ? 'w-full' : 'max-w-[85%]'} text-sm`}>
+                                        {isAi ? WriteAiMessage(msg.message) : (
+                                            <div className={`p-3 px-4 rounded-2xl ${
+                                                isCurrentUser 
+                                                    ? 'bg-blue-600 text-white rounded-tr-none shadow-md shadow-blue-500/20' 
+                                                    : 'bg-gray-100 dark:bg-slate-700 text-gray-800 dark:text-gray-100 rounded-tl-none'
+                                            }`}>
+                                                {msg.message}
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                             )
                         })}
                     </div>
 
-                    <div className="inputField w-full flex absolute bottom-0">
-                        <input
-                            value={message}
-                            onChange={(e) => setMessage(e.target.value)}
-                            onKeyDown={(e) => {
-                                if (e.key === 'Enter') {
-                                    e.preventDefault()
-                                    if (message && message.trim()) {
+                    {/* Input Area */}
+                    <div className="inputField p-4 bg-white dark:bg-slate-800 border-t border-gray-100 dark:border-slate-700">
+                        <div className="relative flex items-center bg-gray-50 dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-600 focus-within:ring-2 focus-within:ring-blue-500/50 transition-all">
+                            <input
+                                value={message}
+                                onChange={(e) => setMessage(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && message.trim()) {
                                         send()
                                     }
-                                }
-                            }}
-                            className='p-2 px-4 border-none outline-none flex-grow' type="text" placeholder='Enter message' />
-                        <button
-                            onClick={send}
-                            className='px-5 bg-slate-950 text-white'><i className="ri-send-plane-fill"></i></button>
+                                }}
+                                className='w-full p-3 pl-4 bg-transparent border-none outline-none text-sm text-gray-800 dark:text-gray-100 placeholder-gray-400' 
+                                type="text" 
+                                placeholder='Type a message or ask AI...' />
+                            <button
+                                onClick={send}
+                                className={`p-2 mr-1 rounded-lg transition-all ${message.trim() ? 'text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/30' : 'text-gray-300 dark:text-slate-600 cursor-not-allowed'}`}>
+                                <i className="ri-send-plane-fill text-xl"></i>
+                            </button>
+                        </div>
                     </div>
                 </div>
-                <div className={`sidePanel w-full h-full flex flex-col gap-2 bg-slate-50 absolute transition-all ${isSidePanelOpen ? 'translate-x-0' : '-translate-x-full'} top-0`}>
-                    <header className='flex justify-between items-center px-4 p-2 bg-slate-200'>
 
-                        <h1
-                            className='font-semibold text-lg'
-                        >Collaborators</h1>
-
-                        <button onClick={() => setIsSidePanelOpen(!isSidePanelOpen)} className='p-2'>
-                            <i className="ri-close-fill"></i>
+                {/* Collaborators Panel (Slide Over) */}
+                <div className={`sidePanel absolute top-0 left-0 w-full h-full bg-white dark:bg-slate-800 z-20 transition-transform duration-300 ${isSidePanelOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+                    <header className='flex justify-between items-center p-4 border-b border-gray-100 dark:border-slate-700 bg-gray-50 dark:bg-slate-900/50'>
+                        <h1 className='font-bold text-gray-700 dark:text-gray-200'><i className="ri-group-line mr-2"></i>Collaborators</h1>
+                        <button onClick={() => setIsSidePanelOpen(false)} className='p-2 hover:bg-gray-200 dark:hover:bg-slate-700 rounded-full transition-colors dark:text-gray-400'>
+                            <i className="ri-close-line text-xl"></i>
                         </button>
                     </header>
-                    <div className="users flex flex-col gap-2">
-
-                        {project.users && project.users.map(user => {
-
-
-                            return (
-                                <div className="user cursor-pointer hover:bg-slate-200 p-2 flex gap-2 items-center">
-                                    <div className='aspect-square rounded-full w-fit h-fit flex items-center justify-center p-5 text-white bg-slate-600'>
-                                        <i className="ri-user-fill absolute"></i>
-                                    </div>
-                                    <h1 className='font-semibold text-lg'>{user.email}</h1>
+                    <div className="users flex flex-col p-2 gap-1 overflow-y-auto h-full">
+                        {project.users && project.users.map(user => (
+                            <div key={user._id || user} className="user p-3 flex gap-3 items-center hover:bg-gray-50 dark:hover:bg-slate-700/50 rounded-lg cursor-default transition-colors">
+                                <div className='w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white shadow-sm'>
+                                    <span className="font-bold text-sm">{(user.email ? user.email[0] : 'U').toUpperCase()}</span>
                                 </div>
-                            )
-
-
-                        })}
+                                <div>
+                                    <h1 className='font-semibold text-sm text-gray-800 dark:text-gray-200'>{user.email || 'Collaborator'}</h1>
+                                    <p className="text-xs text-gray-400 dark:text-gray-500">Member</p>
+                                </div>
+                            </div>
+                        ))}
                     </div>
                 </div>
             </section>
 
-            <section className="right  bg-red-50 flex-grow h-full flex">
-
-                <div className="explorer h-full max-w-64 min-w-52 bg-slate-200">
-                    <div className="file-tree w-full">
-                        {
-                            Object.keys(fileTree).map((file, index) => (
+            {/* Right Work Area */}
+            <section className="right flex-grow h-full flex flex-col bg-gray-900 text-white overflow-hidden">
+                
+                {/* Explorer & Tabs */}
+                <div className="flex h-full">
+                    {/* File Explorer */}
+                    <div className="explorer w-60 bg-gray-800 dark:bg-slate-900 border-r border-gray-700 dark:border-slate-800 flex flex-col">
+                        <div className="p-3 border-b border-gray-700 dark:border-slate-800 text-xs font-bold text-gray-400 uppercase tracking-wider">
+                            Files
+                        </div>
+                        <div className="file-tree flex-grow overflow-y-auto">
+                            {Object.keys(fileTree).map((file, index) => (
                                 <button
                                     key={index}
                                     onClick={() => {
                                         setCurrentFile(file)
                                         setOpenFiles([ ...new Set([ ...openFiles, file ]) ])
+                                        setActiveTab('editor')
                                     }}
-                                    className="tree-element cursor-pointer p-2 px-4 flex items-center gap-2 bg-slate-300 w-full">
-                                    <p
-                                        className='font-semibold text-lg'
-                                    >{file}</p>
-                                </button>))
-
-                        }
-                    </div>
-
-                </div>
-
-
-                <div className="code-editor flex flex-col flex-grow h-full shrink">
-
-                    <div className="top flex justify-between w-full">
-
-                        <div className="files flex">
-                            {
-                                openFiles.map((file, index) => (
-                                    <button
-                                        key={index}
-                                        onClick={() => setCurrentFile(file)}
-                                        className={`open-file cursor-pointer p-2 px-4 flex items-center w-fit gap-2 bg-slate-300 ${currentFile === file ? 'bg-slate-400' : ''}`}>
-                                        <p
-                                            className='font-semibold text-lg'
-                                        >{file}</p>
-                                    </button>
-                                ))
-                            }
-                        </div>
-
-                        <div className="actions flex gap-2">
-                            <button
-                                onClick={async () => {
-                                    await webContainer.mount(fileTree)
-
-
-                                    const installProcess = await webContainer.spawn("npm", [ "install" ])
-
-
-
-                                    installProcess.output.pipeTo(new WritableStream({
-                                        write(chunk) {
-                                            console.log(chunk)
-                                        }
-                                    }))
-
-                                    if (runProcess) {
-                                        runProcess.kill()
-                                    }
-
-                                    let tempRunProcess = await webContainer.spawn("npm", [ "start" ]);
-
-                                    tempRunProcess.output.pipeTo(new WritableStream({
-                                        write(chunk) {
-                                            console.log(chunk)
-                                        }
-                                    }))
-
-                                    setRunProcess(tempRunProcess)
-
-                                    webContainer.on('server-ready', (port, url) => {
-                                        console.log(port, url)
-                                        setIframeUrl(url)
-                                    })
-
-                                }}
-                                className='p-2 px-4 bg-slate-300 text-white'
-                            >
-                                run
-                            </button>
-
-
+                                    className={`w-full text-left px-4 py-2 flex items-center gap-2 text-sm transition-colors ${currentFile === file ? 'bg-blue-600 text-white' : 'text-gray-400 hover:bg-gray-700 dark:hover:bg-slate-800 hover:text-gray-200'}`}>
+                                    <i className="ri-file-code-line text-lg opacity-80"></i>
+                                    <span className="truncate">{file}</span>
+                                </button>
+                            ))}
                         </div>
                     </div>
-                    <div className="bottom flex flex-grow max-w-full shrink overflow-auto">
-                        {
-                            fileTree[ currentFile ] && (
-                                <div className="code-editor-area h-full overflow-auto flex-grow bg-slate-50">
-                                    <pre
-                                        className="hljs h-full">
+
+                    {/* Editor & Preview Area */}
+                    <div className="flex-grow flex flex-col h-full bg-[#1e1e1e]">
+                        {/* Tabs */}
+                        <div className="tabs flex bg-[#252526] border-b border-[#3e3e42] overflow-x-auto no-scrollbar">
+                             {openFiles.map((file, index) => (
+                                <button
+                                    key={index}
+                                    onClick={() => {
+                                        setCurrentFile(file)
+                                        setActiveTab('editor')
+                                    }}
+                                    className={`group flex items-center gap-2 px-4 py-2.5 text-sm min-w-32 max-w-48 border-r border-[#3e3e42] transition-colors ${currentFile === file ? 'bg-[#1e1e1e] text-white border-t-2 border-t-blue-500' : 'text-gray-400 hover:bg-[#2d2d2d]'}`}>
+                                    <span className="truncate flex-grow text-left">{file}</span>
+                                    <i 
+                                        onClick={(e) => {
+                                            e.stopPropagation()
+                                            const newOpen = openFiles.filter(f => f !== file)
+                                            setOpenFiles(newOpen)
+                                            if (currentFile === file) setCurrentFile(newOpen[0] || null)
+                                        }}
+                                        className="ri-close-line opacity-0 group-hover:opacity-100 hover:bg-gray-700 rounded p-0.5"></i>
+                                </button>
+                            ))}
+                        </div>
+
+                        {/* Toolbar */}
+                        <div className="toolbar h-12 bg-[#1e1e1e] border-b border-[#3e3e42] flex items-center justify-between px-4">
+                            <div className="flex gap-4">
+                                <button 
+                                    onClick={() => setActiveTab('editor')} 
+                                    className={`text-sm font-medium transition-colors ${activeTab === 'editor' ? 'text-blue-400' : 'text-gray-500 hover:text-gray-300'}`}>
+                                    <i className="ri-code-s-slash-line mr-1"></i> Code
+                                </button>
+                                <button 
+                                    onClick={() => setActiveTab('preview')} 
+                                    className={`text-sm font-medium transition-colors ${activeTab === 'preview' ? 'text-blue-400' : 'text-gray-500 hover:text-gray-300'}`}>
+                                    <i className="ri-global-line mr-1"></i> Preview
+                                </button>
+                            </div>
+                            
+                            <div className="actions flex gap-2">
+                                <button
+                                    disabled={!webContainer || isRunning}
+                                    onClick={async () => {
+                                        if (!webContainerRef.current) return;
+                                        
+                                        setIsRunning(true)
+                                        setBuildLogs('Mounting files...\n')
+                                        setActiveTab('preview')
+                                        
+                                        try {
+                                            await webContainerRef.current.mount(fileTree)
+                                            
+                                            // 1. Handle Build/Install
+                                            if (latestAiResponse?.buildCommand) {
+                                                const { mainItem, commands } = latestAiResponse.buildCommand;
+                                                setBuildLogs(prev => prev + `Running build: ${mainItem} ${commands.join(' ')}\n`)
+                                                const buildProcess = await webContainerRef.current.spawn(mainItem, commands)
+                                                buildProcess.output.pipeTo(new WritableStream({ write(chunk) { setBuildLogs(prev => prev + chunk) } }))
+                                                const exitCode = await buildProcess.exit;
+                                                if (exitCode !== 0) {
+                                                    setBuildLogs(prev => prev + `\nBuild failed with code ${exitCode}\n`)
+                                                    setIsRunning(false); return;
+                                                }
+                                            } else if (fileTree['package.json']) {
+                                                setBuildLogs(prev => prev + 'Installing dependencies (npm install)...\n')
+                                                const installProcess = await webContainerRef.current.spawn("npm", [ "install" ])
+                                                installProcess.output.pipeTo(new WritableStream({ write(chunk) { setBuildLogs(prev => prev + chunk) } }))
+                                                const exitCode = await installProcess.exit;
+                                                if (exitCode !== 0) {
+                                                    setBuildLogs(prev => prev + `\nInstall failed with code ${exitCode}\n`)
+                                                    setIsRunning(false); return;
+                                                }
+                                            }
+
+                                            if (runProcess) runProcess.kill()
+
+                                            // 2. Handle Start/Run
+                                            let tempRunProcess;
+                                            if (latestAiResponse?.startCommand) {
+                                                const { mainItem, commands } = latestAiResponse.startCommand;
+                                                setBuildLogs(prev => prev + `Starting: ${mainItem} ${commands.join(' ')}\n`)
+                                                tempRunProcess = await webContainerRef.current.spawn(mainItem, commands);
+                                            } else {
+                                                setBuildLogs(prev => prev + 'Starting application (npm start)...\n')
+                                                tempRunProcess = await webContainerRef.current.spawn("npm", [ "start" ]);
+                                            }
+
+                                            tempRunProcess.output.pipeTo(new WritableStream({
+                                                write(chunk) { setBuildLogs(prev => prev + chunk) }
+                                            }))
+                                            setRunProcess(tempRunProcess)
+
+                                            webContainerRef.current.on('server-ready', (port, url) => {
+                                                setIframeUrl(url)
+                                                setIsRunning(false)
+                                            })
+                                            
+                                            // For non-server processes (like a simple C++ run), we might not get 'server-ready'
+                                            // Handle manual stop or completion if needed? For now, leave isRunning if it's a server.
+                                            // If no server ready within 5 seconds and it's not a common server command, maybe stop loading?
+                                            // Actually, the terminal logs show the output, so that's enough for the user.
+
+                                        } catch (err) {
+                                            console.error(err)
+                                            setBuildLogs(prev => prev + '\nERROR: ' + err.message + '\n')
+                                            setIsRunning(false)
+                                        }
+                                    }}
+
+                                    className={`px-4 py-1.5 rounded text-sm font-medium flex items-center gap-2 transition-colors ${
+                                        !webContainer || isRunning 
+                                            ? 'bg-gray-600 cursor-not-allowed text-gray-400' 
+                                            : 'bg-green-600 hover:bg-green-700 text-white shadow-lg shadow-green-500/20'
+                                    }`}
+                                >
+                                    {isRunning ? (
+                                        <><i className="ri-loader-4-line animate-spin"></i> Running...</>
+                                    ) : (
+                                        <><i className="ri-play-fill"></i> Run</>
+                                    )}
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Content Area */}
+                        <div className="content-area flex-grow relative overflow-auto">
+                            {activeTab === 'editor' && currentFile && fileTree[currentFile] && (
+                                <div className="code-editor h-full overflow-auto bg-[#1e1e1e] p-4">
+                                     <pre className="h-full font-mono text-sm leading-6">
                                         <code
-                                            className="hljs h-full outline-none"
+                                            className="h-full outline-none block"
                                             contentEditable
                                             suppressContentEditableWarning
                                             onBlur={(e) => {
                                                 const updatedContent = e.target.innerText;
-                                                const ft = {
-                                                    ...fileTree,
-                                                    [ currentFile ]: {
-                                                        file: {
-                                                            contents: updatedContent
-                                                        }
-                                                    }
-                                                }
+                                                const ft = { ...fileTree, [currentFile]: { file: { contents: updatedContent } } }
                                                 setFileTree(ft)
                                                 saveFileTree(ft)
                                             }}
-                                            dangerouslySetInnerHTML={{ __html: hljs.highlight('javascript', fileTree[ currentFile ].file.contents).value }}
-                                            style={{
-                                                whiteSpace: 'pre-wrap',
-                                                paddingBottom: '25rem',
-                                                counterSet: 'line-numbering',
-                                            }}
+                                            dangerouslySetInnerHTML={{ __html: hljs.highlight('javascript', fileTree[currentFile].file.contents).value }}
                                         />
                                     </pre>
                                 </div>
-                            )
-                        }
-                    </div>
-
-                </div>
-
-                {iframeUrl && webContainer &&
-                    (<div className="flex min-w-96 flex-col h-full">
-                        <div className="address-bar">
-                            <input type="text"
-                                onChange={(e) => setIframeUrl(e.target.value)}
-                                value={iframeUrl} className="w-full p-2 px-4 bg-slate-200" />
+                            )}
+                            
+                            {activeTab === 'preview' && (
+                                <div className="preview h-full w-full bg-white flex flex-col transition-all animate-fadeIn">
+                                    {iframeUrl ? (
+                                        <>
+                                            <div className="url-bar p-2 bg-gray-100 dark:bg-slate-800 border-b border-gray-200 dark:border-slate-700 flex items-center gap-2">
+                                                <div className="flex gap-1.5">
+                                                    <div className="w-3 h-3 rounded-full bg-red-400"></div>
+                                                    <div className="w-3 h-3 rounded-full bg-yellow-400"></div>
+                                                    <div className="w-3 h-3 rounded-full bg-green-400"></div>
+                                                </div>
+                                                <input type="text" readOnly value={iframeUrl} className="flex-grow bg-white dark:bg-slate-900 border border-gray-300 dark:border-slate-600 rounded px-3 py-1 text-xs text-gray-600 dark:text-gray-300" />
+                                            </div>
+                                            <iframe src={iframeUrl} className="flex-grow w-full border-none"></iframe>
+                                        </>
+                                    ) : (
+                                        <div className="flex flex-col items-center justify-center h-full text-gray-400 dark:bg-slate-900 overflow-hidden">
+                                             <div className="w-full max-w-2xl p-6">
+                                                <div className="flex items-center gap-3 mb-4">
+                                                     <i className={`ri-terminal-box-line text-2xl ${isRunning ? 'text-blue-500 animate-pulse' : 'text-gray-500'}`}></i>
+                                                     <span className="text-sm font-bold uppercase tracking-widest text-gray-500">Terminal Output</span>
+                                                </div>
+                                                <div className="bg-black/90 rounded-lg p-4 font-mono text-xs text-green-400 min-h-[300px] max-h-[600px] overflow-auto shadow-2xl border border-white/5 custom-scrollbar">
+                                                    {buildLogs || 'Wait for "Run" button to be ready...'}
+                                                    {isRunning && <span className="inline-block w-2 h-4 ml-1 bg-green-400 animate-pulse"></span>}
+                                                </div>
+                                                <p className="mt-4 text-center text-xs text-gray-500">
+                                                    {isRunning ? 'Installing modules and booting server...' : 'The preview will appear here once the server starts.'}
+                                                </p>
+                                             </div>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
                         </div>
-                        <iframe src={iframeUrl} className="w-full h-full"></iframe>
-                    </div>)
-                }
-
-
+                    </div>
+                </div>
             </section>
 
+             {/* Add User Modal */}
             {isModalOpen && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
-                    <div className="bg-white p-4 rounded-md w-96 max-w-full relative">
-                        <header className='flex justify-between items-center mb-4'>
-                            <h2 className='text-xl font-semibold'>Select User</h2>
-                            <button onClick={() => setIsModalOpen(false)} className='p-2'>
-                                <i className="ri-close-fill"></i>
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-fadeIn">
+                    <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-2xl w-96 max-w-full relative border border-gray-100 dark:border-slate-700">
+                        <header className='flex justify-between items-center mb-6'>
+                            <h2 className='text-xl font-bold text-gray-800 dark:text-white'>Select Collaborator</h2>
+                            <button onClick={() => setIsModalOpen(false)} className='p-1 rounded-full hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors'>
+                                <i className="ri-close-line text-2xl text-gray-500"></i>
                             </button>
                         </header>
-                         {error && <div className="text-red-500 mb-2">{error}</div>}
-                        <div className="users-list flex flex-col gap-2 mb-16 max-h-96 overflow-auto">
-                            {users.map(user => (
-                                <div key={user.id} className={`user cursor-pointer hover:bg-slate-200 ${Array.from(selectedUserId).indexOf(user._id) != -1 ? 'bg-slate-200' : ""} p-2 flex gap-2 items-center`} onClick={() => handleUserClick(user._id)}>
-                                    <div className='aspect-square relative rounded-full w-fit h-fit flex items-center justify-center p-5 text-white bg-slate-600'>
-                                        <i className="ri-user-fill absolute"></i>
+                         {error && <div className="text-red-500 text-sm mb-4 bg-red-50 p-2 rounded">{error}</div>}
+                        <div className="users-list flex flex-col gap-2 mb-6 max-h-64 overflow-y-auto pr-2 custom-scrollbar">
+                            {users.map(u => (
+                                <div key={u._id} 
+                                    className={`cursor-pointer p-3 rounded-lg flex gap-3 items-center transition-all ${
+                                        selectedUserId.has(u._id) 
+                                        ? 'bg-blue-50 dark:bg-blue-900/40 ring-1 ring-blue-500' 
+                                        : 'hover:bg-gray-50 dark:hover:bg-slate-700'
+                                    }`} 
+                                    onClick={() => handleUserClick(u._id)}>
+                                    <div className='w-10 h-10 rounded-full bg-gray-200 dark:bg-slate-600 flex items-center justify-center text-gray-600 dark:text-gray-300 font-bold'>
+                                        {u.email ? u.email[0].toUpperCase() : '?'}
                                     </div>
-                                    <h1 className='font-semibold text-lg'>{user.email}</h1>
+                                    <div>
+                                        <h3 className='font-medium text-gray-800 dark:text-gray-200'>{u.email || 'Unknown User'}</h3>
+                                        <p className="text-xs text-gray-500 dark:text-gray-500">User</p>
+                                    </div>
+                                    {selectedUserId.has(u._id) && <i className="ri-check-circle-fill text-blue-600 ml-auto text-xl"></i>}
                                 </div>
                             ))}
                         </div>
                         <button
                             onClick={addCollaborators}
-                            className='absolute bottom-4 left-1/2 transform -translate-x-1/2 px-4 py-2 bg-blue-600 text-white rounded-md'>
-                            Add Collaborators
+                            className='w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold shadow-lg shadow-blue-500/30 transition-all'>
+                            Add Selected Users
                         </button>
                     </div>
                 </div>

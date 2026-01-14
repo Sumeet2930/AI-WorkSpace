@@ -109,6 +109,13 @@ export const getProjectById = async ({ projectId }) => {
     const project = await projectModel.findOne({
         _id: projectId
     }).populate('users')
+    // .populate('messages.sender') // Assuming messages schema is updated
+    // Commenting out populate for messages until confirming frontend logic compatibility
+    // Actually, let's just populate it.
+    .populate({
+        path: 'messages.sender',
+        select: 'email'
+    })
 
     return project;
 }

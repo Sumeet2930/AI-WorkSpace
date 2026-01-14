@@ -9,6 +9,7 @@ const Home = () => {
     const [ isModalOpen, setIsModalOpen ] = useState(false)
     const [ projectName, setProjectName ] = useState(null)
     const [ project, setProject ] = useState([])
+    const [ error, setError ] = useState('')
 
     const navigate = useNavigate()
 
@@ -22,9 +23,24 @@ const Home = () => {
             .then((res) => {
                 console.log(res)
                 setIsModalOpen(false)
+                setProjectName('')
+                setProject(prev => [...prev, res.data])
             })
-            .catch((error) => {
-                console.log(error)
+            .catch((err) => {
+                console.log(err)
+                if (err.response && err.response.data) {
+                    if (err.response.data.errors) {
+                         if (Array.isArray(err.response.data.errors)) {
+                            setError(err.response.data.errors[0].msg)
+                         } else {
+                            setError(err.response.data.errors)
+                         }
+                    } else {
+                        setError('Failed to create project')
+                    }
+                } else {
+                     setError('Network Error: Could not connect to server. Check console.')
+                }
             })
     }
 
@@ -77,6 +93,7 @@ const Home = () => {
                 <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50">
                     <div className="bg-white p-6 rounded-md shadow-md w-1/3">
                         <h2 className="text-xl mb-4">Create New Project</h2>
+                        {error && <div className="text-red-500 mb-2">{error}</div>}
                         <form onSubmit={createProject}>
                             <div className="mb-4">
                                 <label className="block text-sm font-medium text-gray-700">Project Name</label>

@@ -31,10 +31,20 @@ const Project = () => {
     const [ isSidePanelOpen, setIsSidePanelOpen ] = useState(false)
     const [ isModalOpen, setIsModalOpen ] = useState(false)
     const [ selectedUserId, setSelectedUserId ] = useState(new Set()) // Initialized as Set
-    const [ project, setProject ] = useState(location.state.project)
+    const [ project, setProject ] = useState(location.state?.project || {})
     const [ message, setMessage ] = useState('')
     const { user } = useContext(UserContext)
+    const [ error, setError ] = useState('')
     const messageBox = React.createRef()
+
+    // Redirect or handle safely if project data is missing (e.g., direct access)
+    useEffect(() => {
+        if (!location.state || !location.state.project) {
+            // Ideally navigate back to home or fetch project by ID if URL has it.
+            // For now, prevent crash.
+             console.warn("No project state found. Redirecting might be needed if ID is not in URL.");
+        }
+    }, [location.state])
 
     const [ users, setUsers ] = useState([])
     const [ messages, setMessages ] = useState([]) // New state variable for messages
@@ -72,9 +82,24 @@ const Project = () => {
         }).then(res => {
             console.log(res.data)
             setIsModalOpen(false)
-
+            // Update the project state with the new project data (which includes the updated users list)
+            setProject(res.data.project)
+             setSelectedUserId(new Set())
         }).catch(err => {
             console.log(err)
+             if (err.response && err.response.data) {
+                if (err.response.data.errors) {
+                     if (Array.isArray(err.response.data.errors)) {
+                        setError(err.response.data.errors[0].msg)
+                     } else {
+                        setError(err.response.data.errors)
+                     }
+                } else {
+                    setError('Failed to add collaborators')
+                }
+            } else {
+                 setError('Network Error: Could not connect to server. Check console.')
+            }
         })
 
     }
@@ -111,7 +136,8 @@ const Project = () => {
 
     useEffect(() => {
 
-        initializeSocket(project._id)
+        const socket = initializeSocket(project._id) // Capture socket instance
+        console.log("Socket Initialized for Project ID:", project._id)
 
         if (!webContainer) {
             getWebContainer().then(container => {
@@ -123,7 +149,7 @@ const Project = () => {
 
         receiveMessage('project-message', data => {
 
-            console.log(data)
+            console.log("RECEIVED MESSAGE:", data)
             
             if (data.sender._id == 'ai') {
 
@@ -151,7 +177,9 @@ const Project = () => {
             console.log(res.data.project)
 
             setProject(res.data.project)
+            setProject(res.data.project)
             setFileTree(res.data.project.fileTree || {})
+            setMessages(res.data.project.messages || []) // Load persistent messages
         })
 
         axios.get('/users/all').then(res => {
@@ -201,16 +229,22 @@ const Project = () => {
                     <div
                         ref={messageBox}
                         className="message-box p-1 flex-grow flex flex-col gap-1 overflow-auto max-h-full scrollbar-hide">
-                        {messages.map((msg, index) => (
-                            <div key={index} className={`${msg.sender._id === 'ai' ? 'max-w-80' : 'max-w-52'} ${msg.sender._id == user._id.toString() && 'ml-auto'}  message flex flex-col p-2 bg-slate-50 w-fit rounded-md`}>
-                                <small className='opacity-65 text-xs'>{msg.sender.email}</small>
+                        {messages.map((msg, index) => {
+                            const sender = msg.sender || { _id: 'ai', email: 'AI' }; // Default to AI if sender is missing
+                            const isAi = sender._id === 'ai';
+                            const isCurrentUser = sender._id === user._id.toString();
+
+                            return (
+                            <div key={index} className={`${isAi ? 'max-w-80' : 'max-w-52'} ${isCurrentUser && 'ml-auto'}  message flex flex-col p-2 bg-slate-50 w-fit rounded-md`}>
+                                <small className='opacity-65 text-xs'>{sender.email}</small>
                                 <div className='text-sm'>
-                                    {msg.sender._id === 'ai' ?
+                                    {isAi ?
                                         WriteAiMessage(msg.message)
                                         : <p>{msg.message}</p>}
                                 </div>
                             </div>
-                        ))}
+                            )
+                        })}
                     </div>
 
                     <div className="inputField w-full flex absolute bottom-0">
@@ -402,6 +436,7 @@ const Project = () => {
                                 <i className="ri-close-fill"></i>
                             </button>
                         </header>
+                         {error && <div className="text-red-500 mb-2">{error}</div>}
                         <div className="users-list flex flex-col gap-2 mb-16 max-h-96 overflow-auto">
                             {users.map(user => (
                                 <div key={user.id} className={`user cursor-pointer hover:bg-slate-200 ${Array.from(selectedUserId).indexOf(user._id) != -1 ? 'bg-slate-200' : ""} p-2 flex gap-2 items-center`} onClick={() => handleUserClick(user._id)}>

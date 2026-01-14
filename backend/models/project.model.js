@@ -20,6 +20,17 @@ const projectSchema = new mongoose.Schema({
         type: Object,
         default: {}
     },
+    messages: [
+        {
+            sender: {
+                type: mongoose.Schema.Types.ObjectId,
+                ref: 'user'
+            },
+            message: {
+                type: String,
+            }
+        }
+    ]
 
 })
 

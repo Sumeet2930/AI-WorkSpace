@@ -8,6 +8,7 @@ const Login = () => {
 
     const [ email, setEmail ] = useState('')
     const [ password, setPassword ] = useState('')
+    const [ error, setError ] = useState('')
 
     const { setUser } = useContext(UserContext)
 
@@ -28,7 +29,20 @@ const Login = () => {
 
             navigate('/')
         }).catch((err) => {
-            console.log(err.response.data)
+            console.log(err)
+            if (err.response && err.response.data) {
+                if (err.response.data.errors) {
+                    if (Array.isArray(err.response.data.errors)) {
+                        setError(err.response.data.errors[0].msg)
+                    } else {
+                        setError(err.response.data.errors)
+                    }
+                } else {
+                    setError('Login Failed')
+                }
+            } else {
+                setError('Network Error: Could not connect to server. Check console.')
+            }
         })
     }
 
@@ -36,6 +50,7 @@ const Login = () => {
         <div className="min-h-screen flex items-center justify-center bg-gray-900">
             <div className="bg-gray-800 p-8 rounded-lg shadow-lg w-full max-w-md">
                 <h2 className="text-2xl font-bold text-white mb-6">Login</h2>
+                {error && <div className="text-red-500 mb-4">{error}</div>}
                 <form
                     onSubmit={submitHandler}
                 >

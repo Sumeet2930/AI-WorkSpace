@@ -44,7 +44,16 @@ io.use(async (socket, next) => {
         }
 
 
-        socket.user = decoded;
+        // decoded token only contains email; fetch full user (including _id)
+        const dbUser = await userModel.findOne({ email: decoded.email }).select('email');
+        if (!dbUser) {
+            return next(new Error('Authentication error'))
+        }
+
+        socket.user = {
+            _id: dbUser._id,
+            email: dbUser.email
+        };
 
         next();
 
@@ -88,7 +97,7 @@ io.on('connection', socket => {
 
     socket.on('project-message', async data => {
 
-        const message = data.message;
+        const message = String(data.message ?? '');
         console.log(`Message received from ${socket.user.email} in room ${socket.roomId}: ${message}`);
 
         try {
@@ -112,15 +121,29 @@ io.on('connection', socket => {
             }
         }
 
-        socket.broadcast.to(socket.roomId).emit('project-message', outbound)
-        console.log(`Message broadcasted to room ${socket.roomId} from ${socket.user.email}`);
+        // Emit to everyone in the room INCLUDING the sender so their UI updates too
+        io.to(socket.roomId).emit('project-message', outbound)
+        console.log(`Message emitted to room ${socket.roomId} from ${socket.user.email}`);
 
         if (aiIsPresentInMessage) {
 
 
-            const prompt = message.replace('@ai', '');
+            const prompt = message.replace('@ai', '').trim();
 
-            const result = await generateResult(prompt);
+            let result;
+            try {
+                result = await generateResult(prompt);
+            } catch (err) {
+                console.error('AI generateResult failed:', err);
+                io.to(socket.roomId).emit('project-message', {
+                    message: `AI error: ${err?.message || 'Failed to generate response'}`,
+                    sender: {
+                        _id: 'ai',
+                        email: 'AI'
+                    }
+                })
+                return
+            }
 
             try {
                 const project = await projectModel.findById(socket.roomId);

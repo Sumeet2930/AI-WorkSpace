@@ -27,6 +27,7 @@ function SyntaxHighlightedCode(props) {
 const Project = () => {
 
     const location = useLocation()
+    const navigate = useNavigate()
 
     const [ isSidePanelOpen, setIsSidePanelOpen ] = useState(false)
     const [ isModalOpen, setIsModalOpen ] = useState(false)
@@ -39,12 +40,20 @@ const Project = () => {
 
     // Redirect or handle safely if project data is missing (e.g., direct access)
     useEffect(() => {
-        if (!location.state || !location.state.project) {
-            // Ideally navigate back to home or fetch project by ID if URL has it.
-            // For now, prevent crash.
-             console.warn("No project state found. Redirecting might be needed if ID is not in URL.");
+        const projectId = location.state?.project?._id || new URLSearchParams(location.search).get('projectId')
+
+        if (!projectId) {
+            console.warn("No project state or projectId found in URL. Redirecting to home.")
+            navigate('/')
+            return
         }
-    }, [location.state])
+
+        // if project was provided via navigation state, keep it, otherwise we'll fetch it below
+        if (!location.state || !location.state.project) {
+            console.log('No project in location.state — will fetch by id:', projectId)
+        }
+
+    }, [location.state, location.search, navigate])
 
     const [ users, setUsers ] = useState([])
     const [ messages, setMessages ] = useState([]) // New state variable for messages
@@ -116,15 +125,25 @@ const Project = () => {
     }
 
     function WriteAiMessage(message) {
+        let messageObject = message
 
-        const messageObject = JSON.parse(message)
+        if (typeof message === 'string') {
+            try {
+                messageObject = JSON.parse(message)
+            } catch (e) {
+                // not JSON — treat as plain text
+                messageObject = { text: message }
+            }
+        }
+
+        const text = messageObject?.text ?? String(messageObject)
 
         return (
             <div
                 className='overflow-auto bg-slate-950 text-white rounded-sm p-2'
             >
                 <Markdown
-                    children={messageObject.text}
+                    children={text}
                     options={{
                         overrides: {
                             code: SyntaxHighlightedCode,
@@ -136,8 +155,9 @@ const Project = () => {
 
     useEffect(() => {
 
-        const socket = initializeSocket(project._id) // Capture socket instance
-        console.log("Socket Initialized for Project ID:", project._id)
+        const projectId = location.state?.project?._id || new URLSearchParams(location.search).get('projectId')
+        const socket = initializeSocket(projectId) // Capture socket instance
+        console.log("Socket Initialized for Project ID:", projectId)
 
         if (!webContainer) {
             getWebContainer().then(container => {
@@ -150,37 +170,43 @@ const Project = () => {
         receiveMessage('project-message', data => {
 
             console.log("RECEIVED MESSAGE:", data)
-            
-            if (data.sender._id == 'ai') {
 
-
-                const message = JSON.parse(data.message)
-
-                console.log(message)
-
-                webContainer?.mount(message.fileTree)
-
-                if (message.fileTree) {
-                    setFileTree(message.fileTree || {})
+            if (data.sender && data.sender._id == 'ai') {
+                // Try to parse AI messages as JSON; fall back to plain text
+                let parsedMessage = null
+                try {
+                    parsedMessage = typeof data.message === 'string' ? JSON.parse(data.message) : data.message
+                } catch (err) {
+                    console.warn('AI message is not valid JSON, treating as plain text:', data.message)
+                    parsedMessage = { text: String(data.message) }
                 }
-                setMessages(prevMessages => [ ...prevMessages, data ]) // Update messages state
+
+                console.log(parsedMessage)
+
+                webContainer?.mount(parsedMessage.fileTree)
+
+                if (parsedMessage.fileTree) {
+                    setFileTree(parsedMessage.fileTree || {})
+                }
+
+                // Normalize stored message so UI can expect an object for AI messages
+                setMessages(prevMessages => [ ...prevMessages, { ...data, message: parsedMessage } ])
             } else {
-
-
                 setMessages(prevMessages => [ ...prevMessages, data ]) // Update messages state
             }
         })
 
 
-        axios.get(`/projects/get-project/${location.state.project._id}`).then(res => {
-
-            console.log(res.data.project)
-
-            setProject(res.data.project)
-            setProject(res.data.project)
-            setFileTree(res.data.project.fileTree || {})
-            setMessages(res.data.project.messages || []) // Load persistent messages
-        })
+        if (projectId) {
+            axios.get(`/projects/get-project/${projectId}`).then(res => {
+                console.log(res.data.project)
+                setProject(res.data.project)
+                setFileTree(res.data.project.fileTree || {})
+                setMessages(res.data.project.messages || []) // Load persistent messages
+            }).catch(err => {
+                console.error('Failed to fetch project:', err)
+            })
+        }
 
         axios.get('/users/all').then(res => {
 

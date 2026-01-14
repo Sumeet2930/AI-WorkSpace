@@ -94,9 +94,22 @@ export const getProjectById = async (req, res) => {
 
         const project = await projectService.getProjectById({ projectId });
 
-        return res.status(200).json({
-            project
-        })
+        // Normalize AI sender display: if a stored message sender email matches AI_EMAIL,
+        // present it to clients as `{ _id: 'ai', email: 'AI' }` so the frontend shows 'AI'.
+        const AI_EMAIL = 'ai@system.local'
+
+        const projectObj = project.toObject ? project.toObject() : project;
+
+        if (Array.isArray(projectObj.messages)) {
+            projectObj.messages = projectObj.messages.map(m => {
+                if (m.sender && m.sender.email === AI_EMAIL) {
+                    return { ...m, sender: { _id: 'ai', email: 'AI' } }
+                }
+                return m;
+            })
+        }
+
+        return res.status(200).json({ project: projectObj })
 
     } catch (err) {
         console.log(err)

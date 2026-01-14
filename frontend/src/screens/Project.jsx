@@ -2,7 +2,7 @@ import React, { useState, useEffect, useContext, useRef } from 'react'
 import { UserContext } from '../context/user.context'
 import { useNavigate, useLocation } from 'react-router-dom'
 import axios from '../config/axios'
-import { initializeSocket, receiveMessage, sendMessage } from '../config/socket'
+import { initializeSocket, sendMessage } from '../config/socket'
 import Markdown from 'markdown-to-jsx'
 import hljs from 'highlight.js';
 import { getWebContainer } from '../config/webcontainer'
@@ -114,14 +114,26 @@ const Project = () => {
     }
 
     const send = () => {
+        const currentMessage = message
 
-        sendMessage('project-message', {
-            message,
-            sender: user
-        })
-        setMessages(prevMessages => [ ...prevMessages, { sender: user, message } ]) // Update messages state
-        setMessage("")
+        if (!currentMessage || !currentMessage.trim()) return
 
+        try {
+            const ok = sendMessage('project-message', {
+                message: currentMessage,
+                sender: user
+            })
+
+            if (ok) {
+                // only clear input after successful emit
+                setMessage("")
+            } else {
+                setError('Socket not connected — message not sent')
+            }
+        } catch (err) {
+            console.error('Failed to send message', err)
+            setError('Failed to send message')
+        }
     }
 
     function WriteAiMessage(message) {
@@ -167,8 +179,7 @@ const Project = () => {
         }
 
 
-        receiveMessage('project-message', data => {
-
+        const handler = (data) => {
             console.log("RECEIVED MESSAGE:", data)
 
             if (data.sender && data.sender._id == 'ai') {
@@ -194,7 +205,11 @@ const Project = () => {
             } else {
                 setMessages(prevMessages => [ ...prevMessages, data ]) // Update messages state
             }
-        })
+        }
+
+        socket.on('project-message', handler)
+
+
 
 
         if (projectId) {
@@ -202,7 +217,23 @@ const Project = () => {
                 console.log(res.data.project)
                 setProject(res.data.project)
                 setFileTree(res.data.project.fileTree || {})
-                setMessages(res.data.project.messages || []) // Load persistent messages
+
+                // Normalize messages so `sender` is always an object with `_id` and `email`
+                const msgs = (res.data.project.messages || []).map(m => {
+                    const sender = m.sender || null
+                    let normSender = null
+                    if (sender) {
+                        if (typeof sender === 'string') {
+                            normSender = { _id: sender, email: sender }
+                        } else if (typeof sender === 'object') {
+                            normSender = { _id: sender._id || sender, email: sender.email || String(sender._id || '') }
+                        }
+                    }
+
+                    return { ...m, sender: normSender }
+                })
+
+                setMessages(msgs)
             }).catch(err => {
                 console.error('Failed to fetch project:', err)
             })
@@ -217,6 +248,15 @@ const Project = () => {
             console.log(err)
 
         })
+
+        // cleanup to avoid duplicate handlers (React strict mode mounts twice in dev)
+        return () => {
+            try {
+                socket.off('project-message', handler)
+            } catch (err) {
+                console.warn('Failed to remove socket listener', err)
+            }
+        }
 
     }, [])
 
@@ -256,19 +296,20 @@ const Project = () => {
                         ref={messageBox}
                         className="message-box p-1 flex-grow flex flex-col gap-1 overflow-auto max-h-full scrollbar-hide">
                         {messages.map((msg, index) => {
-                            const sender = msg.sender || { _id: 'ai', email: 'AI' }; // Default to AI if sender is missing
+                            const sender = msg.sender || { _id: 'ai', email: 'AI' };
                             const isAi = sender._id === 'ai';
-                            const isCurrentUser = sender._id === user._id.toString();
+                            const currentUserId = user?._id ? String(user._id) : null
+
+                            const senderIdStr = sender && sender._id ? (sender._id.toString ? sender._id.toString() : String(sender._id)) : null
+                            const isCurrentUser = currentUserId && senderIdStr && currentUserId === senderIdStr
 
                             return (
-                            <div key={index} className={`${isAi ? 'max-w-80' : 'max-w-52'} ${isCurrentUser && 'ml-auto'}  message flex flex-col p-2 bg-slate-50 w-fit rounded-md`}>
-                                <small className='opacity-65 text-xs'>{sender.email}</small>
-                                <div className='text-sm'>
-                                    {isAi ?
-                                        WriteAiMessage(msg.message)
-                                        : <p>{msg.message}</p>}
+                                <div key={index} className={`${isAi ? 'max-w-80' : 'max-w-52'} ${isCurrentUser ? 'ml-auto' : ''}  message flex flex-col p-2 bg-slate-50 w-fit rounded-md`}>
+                                    <small className='opacity-65 text-xs'>{sender.email}</small>
+                                    <div className='text-sm'>
+                                        {isAi ? WriteAiMessage(msg.message) : <p>{msg.message}</p>}
+                                    </div>
                                 </div>
-                            </div>
                             )
                         })}
                     </div>
@@ -277,6 +318,14 @@ const Project = () => {
                         <input
                             value={message}
                             onChange={(e) => setMessage(e.target.value)}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                    e.preventDefault()
+                                    if (message && message.trim()) {
+                                        send()
+                                    }
+                                }
+                            }}
                             className='p-2 px-4 border-none outline-none flex-grow' type="text" placeholder='Enter message' />
                         <button
                             onClick={send}

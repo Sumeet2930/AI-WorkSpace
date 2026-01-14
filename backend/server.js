@@ -5,6 +5,7 @@ import { Server } from 'socket.io';
 import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
 import projectModel from './models/project.model.js';
+import userModel from './models/user.model.js';
 import { generateResult } from './services/ai.service.js';
 
 const port = process.env.PORT || 3000;
@@ -53,6 +54,26 @@ io.use(async (socket, next) => {
 
 })
 
+// Ensure an AI user exists in the database so AI messages can be saved as a valid user reference
+let aiUser = null;
+const AI_EMAIL = 'ai@system.local';
+
+const ensureAiUser = async () => {
+    try {
+        aiUser = await userModel.findOne({ email: AI_EMAIL });
+        if (!aiUser) {
+            aiUser = await userModel.create({ email: AI_EMAIL });
+            console.log('Created AI user:', aiUser.email);
+        } else {
+            console.log('AI user exists:', aiUser.email);
+        }
+    } catch (err) {
+        console.error('Failed to ensure AI user:', err);
+    }
+}
+
+ensureAiUser();
+
 
 io.on('connection', socket => {
     socket.roomId = socket.project._id.toString()
@@ -82,8 +103,17 @@ io.on('connection', socket => {
         }
 
         const aiIsPresentInMessage = message.includes('@ai');
-        socket.broadcast.to(socket.roomId).emit('project-message', data)
-        console.log(`Message broadcasted to room ${socket.roomId}`);
+        // Broadcast a normalized message object so clients have sender email available
+        const outbound = {
+            message: data.message,
+            sender: {
+                _id: socket.user._id,
+                email: socket.user.email
+            }
+        }
+
+        socket.broadcast.to(socket.roomId).emit('project-message', outbound)
+        console.log(`Message broadcasted to room ${socket.roomId} from ${socket.user.email}`);
 
         if (aiIsPresentInMessage) {
 
@@ -92,29 +122,26 @@ io.on('connection', socket => {
 
             const result = await generateResult(prompt);
 
-             try {
+            try {
                 const project = await projectModel.findById(socket.roomId);
-                // AI messages have no sender Object ID in User collection, but schema expects ObjectId ref 'user'.
-                // AI functionality might be custom. If 'ai' is not a valid ObjectId, this will fail validation.
-                // Assuming "ai" is handled or we need a specific AI user in DB.
-                // For now, let's skip saving AI messages or use a dummy ID if required.
-                // Looking at frontend logic: sender: { _id: 'ai', email: 'AI' }
-                // Schema requires ObjectId. 'ai' is not a valid ObjectId.
-                // WE NEED TO FIX THIS: Either make sender flexible or create an AI user.
-                // Recommendation: Create AI User or relax schema.
-                // Quick fix: Do not save AI messages for now to prevent crash, OR relax schema in model.
-                // Let's relax schema in model to Mixed or keep ObjectId and create an AI user.
-                // BETTER: Just allow custom object for sender OR send AI messages from a system user ID.
-                
-                project.messages.push({
-                    sender: null, // or a specific AI user ID?
-                    message: result
-                });
-                // await project.save(); // Commented out to avoid crash until AI user is valid
+
+                // Save AI message using the AI user's ObjectId if available
+                const aiSenderId = aiUser?._id || (await userModel.findOne({ email: AI_EMAIL }))._id;
+
+                if (aiSenderId) {
+                    project.messages.push({
+                        sender: aiSenderId,
+                        message: result
+                    });
+                    await project.save();
+                } else {
+                    console.warn('AI user id not available; skipping DB save for AI message');
+                }
             } catch (err) {
                  console.log("Error saving AI message:", err);
             }
 
+            // Emit AI message to clients using a lightweight AI sender object so frontend shows 'AI'
             io.to(socket.roomId).emit('project-message', {
                 message: result,
                 sender: {
@@ -122,7 +149,6 @@ io.on('connection', socket => {
                     email: 'AI'
                 }
             })
-
 
             return
         }

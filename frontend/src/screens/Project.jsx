@@ -12,8 +12,8 @@ function SyntaxHighlightedCode(props) {
     const ref = useRef(null)
 
     React.useEffect(() => {
-        if (ref.current && props.className?.includes('lang-') && window.hljs) {
-            window.hljs.highlightElement(ref.current)
+        if (ref.current && props.className?.includes('lang-') && hljs) {
+            hljs.highlightElement(ref.current)
             ref.current.removeAttribute('data-highlighted')
         }
     }, [ props.className, props.children ])
@@ -32,6 +32,7 @@ const Project = () => {
     const [ message, setMessage ] = useState('')
     const { user } = useContext(UserContext)
     const [ error, setError ] = useState('')
+    const [ loading, setLoading ] = useState(true)
     const messageBox = React.createRef()
     
     // UI State for tabs/panels
@@ -161,6 +162,7 @@ const Project = () => {
 
         socket.on('project-message', handler)
 
+        setLoading(true)
         // Fetch project if needed or if refresh
         axios.get(`/projects/get-project/${projectId}`).then(res => {
             if (res.data.project) {
@@ -186,9 +188,11 @@ const Project = () => {
                 })
                 setMessages(msgs)
             }
+            setLoading(false)
         }).catch(err => {
             console.error('Failed to load project:', err)
             setError('Failed to load project details.')
+            setLoading(false)
         })
 
         axios.get('/users/all').then(res => setUsers(res.data.users))
@@ -205,6 +209,34 @@ const Project = () => {
             messageBox.current.scrollTop = messageBox.current.scrollHeight
         }
     }, [messages])
+
+    if (loading) {
+        return (
+            <div className="h-screen w-screen flex flex-col items-center justify-center bg-gray-50 dark:bg-slate-900">
+                <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-4"></div>
+                <p className="text-gray-500 dark:text-gray-400 animate-pulse">Loading Workspace...</p>
+            </div>
+        )
+    }
+
+    if (error && !project?._id) {
+        return (
+            <div className="h-screen w-screen flex flex-col items-center justify-center bg-gray-50 dark:bg-slate-900 p-6">
+                <div className="bg-white dark:bg-slate-800 p-8 rounded-2xl shadow-xl border border-red-100 dark:border-red-900/30 max-w-md w-full text-center">
+                    <div className="w-20 h-20 bg-red-50 dark:bg-red-900/20 rounded-full flex items-center justify-center mx-auto mb-6">
+                        <i className="ri-error-warning-line text-4xl text-red-500"></i>
+                    </div>
+                    <h2 className="text-2xl font-bold text-gray-800 dark:text-white mb-2">Oops! Something went wrong</h2>
+                    <p className="text-gray-500 dark:text-gray-400 mb-8">{error}</p>
+                    <button 
+                        onClick={() => navigate('/')}
+                        className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold transition-all shadow-lg shadow-blue-500/20">
+                        Return to Home
+                    </button>
+                </div>
+            </div>
+        )
+    }
 
     return (
         <main className='h-screen w-screen flex bg-gray-50 dark:bg-slate-900 overflow-hidden transition-colors duration-300'>
@@ -472,7 +504,9 @@ const Project = () => {
                                                 setFileTree(ft)
                                                 saveFileTree(ft)
                                             }}
-                                            dangerouslySetInnerHTML={{ __html: hljs.highlight('javascript', fileTree[currentFile].file.contents).value }}
+                                            dangerouslySetInnerHTML={{ 
+                                                __html: hljs.highlight(fileTree[currentFile]?.file?.contents || '', { language: 'javascript' }).value 
+                                            }}
                                         />
                                     </pre>
                                 </div>

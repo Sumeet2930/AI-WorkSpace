@@ -94,6 +94,10 @@ export const getProjectById = async (req, res) => {
 
         const project = await projectService.getProjectById({ projectId });
 
+        if (!project) {
+            return res.status(404).json({ error: 'Project not found' });
+        }
+
         // Normalize AI sender display: if a stored message sender email matches AI_EMAIL,
         // present it to clients as `{ _id: 'ai', email: 'AI' }` so the frontend shows 'AI'.
         const AI_EMAIL = 'ai@system.local'

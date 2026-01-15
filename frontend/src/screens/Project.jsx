@@ -12,8 +12,8 @@ function SyntaxHighlightedCode(props) {
     const ref = useRef(null)
 
     React.useEffect(() => {
-        if (ref.current && props.className?.includes('lang-') && hljs) {
-            hljs.highlightElement(ref.current)
+        if (ref.current && props.className?.includes('lang-') && window.hljs) {
+            window.hljs.highlightElement(ref.current)
             ref.current.removeAttribute('data-highlighted')
         }
     }, [ props.className, props.children ])
@@ -30,10 +30,9 @@ const Project = () => {
     const [ selectedUserId, setSelectedUserId ] = useState(new Set())
     const [ project, setProject ] = useState(location.state?.project || {})
     const [ message, setMessage ] = useState('')
-    const { user } = useContext(UserContext)
+    const [ user, setUser ] = useState(useContext(UserContext).user)
     const [ error, setError ] = useState('')
-    const [ loading, setLoading ] = useState(true)
-    const messageBox = React.createRef()
+    const messageBox = useRef(null)
     
     // UI State for tabs/panels
     const [ activeTab, setActiveTab ] = useState('editor') // 'editor' | 'preview'
@@ -99,7 +98,6 @@ const Project = () => {
         let messageObject = message
         if (typeof message === 'string') {
             try {
-                // Remove potential markdown code blocks if Gemini wraps JSON
                 const cleaned = message.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim()
                 messageObject = JSON.parse(cleaned)
             } catch (e) {
@@ -107,9 +105,18 @@ const Project = () => {
             }
         }
         
-        // If it's still an object, extract the text part
-        const text = messageObject?.text || (typeof messageObject === 'string' ? messageObject : JSON.stringify(messageObject))
-        
+        // Basic normalization if it's an array or missing text
+        let text = ''
+        if (messageObject && typeof messageObject === 'object') {
+            if (Array.isArray(messageObject)) {
+                text = "I have generated some files for you. Check the file explorer."
+            } else {
+                text = messageObject.text || messageObject.message || JSON.stringify(messageObject)
+            }
+        } else {
+            text = String(messageObject)
+        }
+
         return (
             <div className='overflow-auto bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-700 rounded-lg p-3 shadow-sm'>
                 <div className="prose dark:prose-invert max-w-none text-sm">
@@ -141,12 +148,26 @@ const Project = () => {
                     const msgStr = typeof data.message === 'string' ? data.message : JSON.stringify(data.message)
                     const cleaned = msgStr.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim()
                     parsedMessage = JSON.parse(cleaned)
+                    
+                    // Normalize if AI sent an array of objects (as seen in some versions)
+                    if (Array.isArray(parsedMessage)) {
+                        const tree = {}
+                        parsedMessage.forEach(fileObj => {
+                            if (fileObj.fileName && fileObj.code) {
+                                tree[fileObj.fileName] = { file: { contents: fileObj.code } }
+                            }
+                        })
+                        parsedMessage = {
+                            text: "I have generated the files as requested.",
+                            fileTree: tree
+                        }
+                    }
                 } catch (err) {
                     parsedMessage = { text: typeof data.message === 'object' ? JSON.stringify(data.message) : String(data.message) }
                 }
                 
                 if (parsedMessage.fileTree) {
-                    setFileTree(parsedMessage.fileTree)
+                    setFileTree(prev => ({ ...prev, ...parsedMessage.fileTree }))
                     webContainerRef.current?.mount(parsedMessage.fileTree).catch(e => console.error('Mount failed:', e))
                 }
                 
@@ -162,7 +183,6 @@ const Project = () => {
 
         socket.on('project-message', handler)
 
-        setLoading(true)
         // Fetch project if needed or if refresh
         axios.get(`/projects/get-project/${projectId}`).then(res => {
             if (res.data.project) {
@@ -188,11 +208,9 @@ const Project = () => {
                 })
                 setMessages(msgs)
             }
-            setLoading(false)
         }).catch(err => {
             console.error('Failed to load project:', err)
             setError('Failed to load project details.')
-            setLoading(false)
         })
 
         axios.get('/users/all').then(res => setUsers(res.data.users))
@@ -210,28 +228,17 @@ const Project = () => {
         }
     }, [messages])
 
-    if (loading) {
+    if (error) {
         return (
-            <div className="h-screen w-screen flex flex-col items-center justify-center bg-gray-50 dark:bg-slate-900">
-                <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-4"></div>
-                <p className="text-gray-500 dark:text-gray-400 animate-pulse">Loading Workspace...</p>
-            </div>
-        )
-    }
-
-    if (error && !project?._id) {
-        return (
-            <div className="h-screen w-screen flex flex-col items-center justify-center bg-gray-50 dark:bg-slate-900 p-6">
-                <div className="bg-white dark:bg-slate-800 p-8 rounded-2xl shadow-xl border border-red-100 dark:border-red-900/30 max-w-md w-full text-center">
-                    <div className="w-20 h-20 bg-red-50 dark:bg-red-900/20 rounded-full flex items-center justify-center mx-auto mb-6">
-                        <i className="ri-error-warning-line text-4xl text-red-500"></i>
-                    </div>
-                    <h2 className="text-2xl font-bold text-gray-800 dark:text-white mb-2">Oops! Something went wrong</h2>
-                    <p className="text-gray-500 dark:text-gray-400 mb-8">{error}</p>
+            <div className="flex flex-col items-center justify-center h-screen w-screen bg-gray-50 dark:bg-slate-900 transition-colors">
+                <div className="p-8 bg-white dark:bg-slate-800 rounded-2xl shadow-xl border border-gray-100 dark:border-slate-700 max-w-md text-center animate-fadeIn">
+                    <i className="ri-error-warning-line text-6xl text-red-500 mb-4 block animate-bounce"></i>
+                    <h2 className="text-2xl font-bold text-gray-800 dark:text-white mb-2">Project Not Found</h2>
+                    <p className="text-gray-600 dark:text-gray-400 mb-6">{error}</p>
                     <button 
                         onClick={() => navigate('/')}
-                        className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold transition-all shadow-lg shadow-blue-500/20">
-                        Return to Home
+                        className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-all font-medium shadow-lg shadow-blue-500/20 hover:scale-105">
+                        Back to Home
                     </button>
                 </div>
             </div>
@@ -504,9 +511,7 @@ const Project = () => {
                                                 setFileTree(ft)
                                                 saveFileTree(ft)
                                             }}
-                                            dangerouslySetInnerHTML={{ 
-                                                __html: hljs.highlight(fileTree[currentFile]?.file?.contents || '', { language: 'javascript' }).value 
-                                            }}
+                                            dangerouslySetInnerHTML={{ __html: hljs.highlight('javascript', fileTree[currentFile].file.contents).value }}
                                         />
                                     </pre>
                                 </div>

@@ -1,6 +1,6 @@
-# AIWorkspace
+# AI-WorkSpace
 
-AIWorkspace is a collaborative platform that enables users to create and manage projects, collaborate with team members, chat, and utilize AI capabilities for code generation and execution. This README provides an overview of the project and guides users on how to set up and use AIWorkspace effectively.
+AI-WorkSpace is a collaborative platform that enables users to create and manage projects, collaborate with team members, chat, and utilize AI capabilities for code generation and execution. This README provides an overview of the project and guides users on how to set up and use AIWorkspace effectively.
 
 ## Features
 
@@ -32,11 +32,11 @@ AIWorkspace is a collaborative platform that enables users to create and manage 
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/aiworkspace.git
+   git clone https://github.com/Sumeet2930/AI-WorkSpace.git
    ```
 2. Navigate to the project directory:
    ```bash
-   cd aiworkspace
+   cd AI-WorkSpace
    ```
 3. Install dependencies:
    ```bash
